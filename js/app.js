@@ -292,7 +292,7 @@ function tick() {
   for (const { note, time } of engine.tick(now, AHEAD + lat)) {
     if (settings.muted.has(note.part)) continue;
     const part = data.parts[note.partIdx];
-    const set = part.set === "strings" && note.tremolo >= 3 ? "tremolo" : part.set;
+    const set = ["violins1", "violins2", "violas", "celli", "basses"].includes(part.set) && note.tremolo >= 3 ? "tremolo" : part.set;
     const vel = Math.max(20, Math.min(127, note.velocity + part.vel - 75));
     sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95);
     debug.played++;

@@ -3,7 +3,8 @@
 // other pitches are the nearest sample sped up or slowed down, and held notes
 // loop over a crossfaded stretch of their sustain.
 
-const RELEASE = { strings: 0.18, tremolo: 0.18, timpani: 0.8, piano: 0.5, drums: 0.6 }; // s; others 0.1
+const SHORT = 0.35; // s; notes shorter than this get the fast attack
+const RELEASE = { violins1: 0.18, violins2: 0.18, violas: 0.18, celli: 0.2, basses: 0.22, tremolo: 0.18, timpani: 0.8, piano: 0.5, drums: 0.6 }; // s; others 0.1
 
 export class Sampler {
   constructor(ctx) {
@@ -51,8 +52,9 @@ export class Sampler {
         for (let i = a; i < b; i++) if (Math.abs(data[i]) > 1e-3) return Math.max(a, i - 16) / sr;
         return k * index.slot + index.pad;
       });
+      const attack = s.attack && Object.fromEntries(["short", "long"].map(k => [k, s.attack[k].map(c => Float32Array.from(c))]));
       this.sets[name] = { buffer, pitches: s.pitches, onsets, loop: s.loop, slot: index.slot, pad: index.pad,
-                          loopPts: index.loop };
+                          loopPts: index.loop, attack, step: s.attack?.step };
       onProgress(++done / names.length);
     }));
   }
@@ -75,9 +77,18 @@ export class Sampler {
       src.loopEnd = on + s.loopPts[1];
     }
     const g = new GainNode(this.ctx, { gain: 0 });
-    src.connect(g).connect(this.out);
     const amp = Math.min(1.6, (velocity / 100) ** 2);
     const start = Math.max(when, this.ctx.currentTime);
+    if (s.attack) {
+      // bring a slowly swelling sample (bowed strings) to its level quickly:
+      // within 15 ms for short notes, 60 ms for long ones
+      const curve = s.attack[dur < SHORT ? "short" : "long"][k];
+      const a = new GainNode(this.ctx, { gain: curve[0] });
+      a.gain.setValueCurveAtTime(curve, start, curve.length * s.step / rate);
+      src.connect(a).connect(g).connect(this.out);
+    } else {
+      src.connect(g).connect(this.out);
+    }
     g.gain.setValueAtTime(amp, start);
     const rel = RELEASE[name] ?? 0.1;
     const natural = s.loop ? Infinity : held / rate;

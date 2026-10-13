@@ -55,10 +55,13 @@ window.concerto = { debug, get engine() { return engine; }, get ctx() { return c
 const barOf = beat => Math.floor(beat / BAR + 1e-9) + 1;
 const fmtBars = (a, b) => { const x = barOf(a), y = barOf(b - 1e-6); return x === y ? `Bar ${x}` : `Bars ${x}–${y}`; };
 
+let lastShownBeat = -1;
 function status(text, warn = false) {
   const el = $("status");
   el.textContent = text;
   el.classList.toggle("warn", warn);
+  const p = $("pStatus");
+  if (p) p.textContent = text;
 }
 
 // ------------------------------------------------------------ tempo settings
@@ -93,7 +96,7 @@ function effectiveTempoMap() {
         }
         let bpm = null;
         for (const [rb, base] of sectionRows(a, b)) if (rb <= beat) bpm = settings.tempos[`${a}@${rb}`] ?? base;
-        return bpm;
+        return Math.round(bpm * (settings.speed[a] ?? 100) / 100 * 10) / 10;
       }
     }
     return ref.nominalBpm(beat);
@@ -150,12 +153,13 @@ function renderSections() {
       tempi.innerHTML = "";
       const mode = sectionMode(a);
       div.classList.toggle("keep", mode === "keep");
-      if (mode === "recording") {
-        const vals = rt.bpm.map(r => r[1]);
+      if (mode === "recording" || mode === "score") {
+        const vals = mode === "recording" ? rt.bpm.map(r => r[1]) : null;
         const row = document.createElement("label");
         row.className = "tempo";
         const span = document.createElement("span");
-        span.textContent = `Speed (the recording goes ♩≈${Math.round(Math.min(...vals))}–${Math.round(Math.max(...vals))})`;
+        span.textContent = vals ? `Speed (the recording goes ♩≈${Math.round(Math.min(...vals))}–${Math.round(Math.max(...vals))})`
+          : "Speed (scales the tempos below)";
         const input = numberInput(settings.speed[a] ?? 100, 50, 150, (v, el) => {
           if (v === 100) delete settings.speed[a]; else settings.speed[a] = v;
           el.classList.toggle("changed", v !== 100);
@@ -167,7 +171,7 @@ function renderSections() {
         unit.style.color = "var(--dim)";
         row.append(span, input, unit);
         tempi.append(row);
-        return;
+        if (mode === "recording") return;
       }
       for (const [rb, base] of sectionRows(a, b)) {
         const key = `${a}@${rb}`;
@@ -371,9 +375,12 @@ function tick() {
   }
   if (!engine.started) return;
   const b = engine.clock.beat;
-  $("bar").textContent = barOf(b);
-  $("beat").textContent = (Math.floor((b % BAR) * 10) / 10 + 1).toFixed(1);
-  $("tempo").textContent = Math.round(engine.clock.rate * 60);
+  for (const [bb, bt, tp] of [["bar", "beat", "tempo"], ["pBar", "pBeat", "pTempo"]]) {
+    $(bb).textContent = barOf(b);
+    $(bt).textContent = (Math.floor((b % BAR) * 10) / 10 + 1).toFixed(1);
+    $(tp).textContent = Math.round(engine.clock.rate * 60);
+  }
+  if (Math.floor(b) !== lastShownBeat) { lastShownBeat = Math.floor(b); showSection(); }
   const f = engine.follower;
   if (engine.soloistActive(b) && f.lastTime !== null) status("Following you");
   else {
@@ -436,8 +443,18 @@ async function play() {
     // MIDI permission and devices can come later: don't hold up the orchestra
     startMidi().catch(e => { $("inputHint").textContent = `Couldn't open MIDI: ${e.message}`; });
   }
+  startAt(settings.startBar);
+  $("perf").hidden = false;
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (e) { /* not supported */ }
+}
+
+// (Re)start the engine at a bar: the orchestra starts at once where it plays
+// first, else it waits for the player.
+function startAt(bar) {
+  clearInterval(timer);
+  sampler.stopAll();
   const score = new Score(data, effectiveTempoMap());
-  const startBeat = score.beatOfMeasure(settings.startBar);
+  const startBeat = score.beatOfMeasure(bar);
   engine = new Engine(score, startBeat, 1.0, settings.mode === "mic");
   if (settings.steady && data.plan) engine.setPlan(data.plan);
   engine.keepTempo = new Set(engine.sections.map(([a], i) => (sectionMode(a) === "keep" ? i : -1)).filter(i => i >= 0));
@@ -446,11 +463,49 @@ async function play() {
   endAt = null;
   if (orchestraFirst) engine.start(ctx.currentTime);
   status(orchestraFirst ? "Orchestra" : "Start playing. The orchestra comes in with you.");
-  $("bar").textContent = settings.startBar; $("beat").textContent = "1.0";
-  $("tempo").textContent = Math.round(score.nominalBpm(startBeat));
+  for (const [b, bt, tp] of [["bar", "beat", "tempo"], ["pBar", "pBeat", "pTempo"]]) {
+    $(b).textContent = bar; $(bt).textContent = "1.0"; $(tp).textContent = Math.round(score.nominalBpm(startBeat));
+  }
   $("play").hidden = true; $("stop").hidden = false;
+  showSection();
   timer = setInterval(tick, TICK_MS);
-  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (e) { /* not supported */ }
+}
+
+// the orchestra-only passage the tempo buttons act on: the one playing, else the next
+function targetSection() {
+  const b = engine ? engine.clock.beat : ref.beatOfMeasure(settings.startBar);
+  const secs = ref.orchestraSections();
+  return secs.find(([a, z]) => a <= b && b < z) || secs.find(([a]) => a > b) || null;
+}
+
+function showSection() {
+  const t = targetSection();
+  if (!t) { $("pSection").textContent = "No orchestra-only passage ahead."; return; }
+  const [a, z] = t, mode = sectionMode(a);
+  const now = engine && engine.clock.beat >= a ? "Now" : "Next";
+  $("pSection").textContent = mode === "keep"
+    ? `${now}: ${fmtBars(a, z)}, keeps your tempo (change this in the settings)`
+    : `${now}: ${fmtBars(a, z)}, orchestra at ${settings.speed[a] ?? 100}%`;
+}
+
+// change the orchestra's own tempo (that passage), now and from now on
+function nudgeTempo(delta) {
+  const t = targetSection();
+  if (!t) return;
+  const a = t[0];
+  if (sectionMode(a) === "keep") { showSection(); return; }
+  const v = Math.max(50, Math.min(150, (settings.speed[a] ?? 100) + delta));
+  if (v === 100) delete settings.speed[a]; else settings.speed[a] = v;
+  save();
+  if (engine) engine.score.tempoMap = effectiveTempoMap();
+  renderSections();
+  showSection();
+}
+
+function jumpBack(bars) {
+  if (!engine) return;
+  const here = Math.max(1, Math.floor(engine.clock.beat / BAR + 1e-9) + 1);
+  startAt(Math.max(1, here - bars));
 }
 
 function stop(msg = "Stopped.") {
@@ -463,6 +518,7 @@ function stop(msg = "Stopped.") {
   wakeLock?.release?.().catch(() => {});
   wakeLock = null;
   $("play").hidden = false; $("stop").hidden = true;
+  $("perf").hidden = true;
   status(msg);
 }
 
@@ -503,6 +559,11 @@ async function init() {
   $("resetTempos").onclick = () => { settings.tempos = {}; settings.modes = {}; settings.speed = {}; save(); renderSections(); };
   $("play").onclick = play;
   $("stop").onclick = () => stop();
+  $("pStop").onclick = () => stop();
+  $("pBack1").onclick = () => jumpBack(1);
+  $("pBack4").onclick = () => jumpBack(4);
+  $("pSlower").onclick = () => nudgeTempo(-5);
+  $("pFaster").onclick = () => nudgeTempo(5);
   document.addEventListener("visibilitychange", () => { if (document.hidden && timer) stop("Stopped (the app went to the background)."); });
 
   samples = await prefetchSamples("", p => status(`Loading the orchestra… ${Math.round(p * 100)}%`));

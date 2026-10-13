@@ -90,6 +90,23 @@
   <footer class="hint">Works offline once loaded. Use headphones with the microphone, or keep the phone's
     speaker away from it, so the app doesn't hear the orchestra instead of you.</footer>
 </main>
+<!-- while playing: big controls only -->
+<section id="perf" hidden>
+  <div class="pread">
+    <div><label>Bar</label><output id="pBar">–</output></div>
+    <div><label>Beat</label><output id="pBeat">–</output></div>
+    <div><label>♩ =</label><output id="pTempo">–</output></div>
+  </div>
+  <p id="pStatus"></p>
+  <div class="pgrid">
+    <button id="pBack4">◀◀ 4 bars</button>
+    <button id="pBack1">◀ 1 bar</button>
+    <button id="pSlower">Orchestra<br>slower</button>
+    <button id="pFaster">Orchestra<br>faster</button>
+  </div>
+  <p id="pSection" class="hint"></p>
+  <button id="pStop" class="pstop">Stop</button>
+</section>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

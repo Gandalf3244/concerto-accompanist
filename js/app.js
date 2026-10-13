@@ -3,7 +3,7 @@
 import { Score, BAR } from "./score.js";
 import { Engine } from "./engine.js";
 import { AudioFrontEnd } from "./micfront.js";
-import { Sampler } from "./sampler.js";
+import { Sampler, prefetchSamples } from "./sampler.js";
 
 const AHEAD = 0.04;  // s; orchestra notes are scheduled this far ahead
 const TICK_MS = 8;
@@ -293,12 +293,12 @@ function onMidi(e) {
   const kind = st & 0xf0;
   if (kind === 0x90 && d2 > 0) {
     noteOn(d1, d2, t);
-    if (settings.echo && sampler.loaded) {
+    if (settings.echo && sampler?.loaded) {
       sampler.release(echoVoices.get(d1), 0.1);
       echoVoices.set(d1, sampler.play("piano", d1, d2, ctx.currentTime, 30));
     }
   } else if (kind === 0x80 || (kind === 0x90 && d2 === 0)) {
-    sampler.release(echoVoices.get(d1));
+    sampler?.release(echoVoices.get(d1));
     echoVoices.delete(d1);
   } else if (kind === 0xb0 && d1 === 64 && d2 >= 64 && engine && !engine.started && orchestraFirst) {
     engine.start(ctx.currentTime);
@@ -385,8 +385,45 @@ function tick() {
   }
 }
 
+// The audio context is made on the first tap of Play (iOS wants it made and
+// started in a tap), then the downloaded samples are decoded into it.
+let samples = null, preparing = null;
+async function ensureAudio() {
+  if (ctx) { await ctx.resume(); return; }
+  audioSession("playback");
+  ctx = new AudioContext({ latencyHint: "interactive" });
+  if (!(ctx.sampleRate > 0)) ctx = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+  const resumed = ctx.resume(); // within the tap
+  // a moment of silence unlocks audio on older iPhones
+  const unlock = ctx.createBufferSource();
+  unlock.buffer = ctx.createBuffer(1, 1, ctx.sampleRate > 0 ? ctx.sampleRate : 48000);
+  unlock.connect(ctx.destination);
+  unlock.start();
+  sampler = new Sampler(ctx, { normalize: true });
+  sampler.setVolume(settings.volume);
+  status("Preparing the orchestra…");
+  await resumed;
+  await sampler.decode(samples, p => status(`Preparing the orchestra… ${Math.round(p * 100)}%`));
+}
+
+function explain(e) {
+  const where = (e && e.stack || "").split("\n").find(l => /\.js/.test(l)) || "";
+  return `${e && e.message || e}${where ? ` (${where.trim().replace(/^.*\//, "")})` : ""}`;
+}
+
 async function play() {
-  await ctx.resume();
+  if (preparing) return;
+  try {
+    preparing = ensureAudio();
+    await preparing;
+  } catch (e) {
+    status(`Couldn't start the sound: ${explain(e)}`, true);
+    console.error(e);
+    ctx = null; sampler = null;
+    return;
+  } finally {
+    preparing = null;
+  }
   if (settings.mode === "mic") {
     try { await startMic(); } catch (e) {
       status("The app needs the microphone to hear you. Allow it in Settings › Safari › Microphone.", true);
@@ -458,7 +495,7 @@ async function init() {
   $("echo").onchange = e => { settings.echo = e.target.checked; save(); };
   $("aec").checked = settings.aec;
   $("aec").onchange = e => { settings.aec = e.target.checked; save(); stopMic(); };
-  $("volume").oninput = e => { settings.volume = +e.target.value; sampler.setVolume(settings.volume); save(); };
+  $("volume").oninput = e => { settings.volume = +e.target.value; sampler?.setVolume(settings.volume); save(); };
   $("latency").oninput = e => {
     settings.latencyMs = +e.target.value; $("latencyOut").textContent = `${settings.latencyMs} ms`; save();
   };
@@ -467,14 +504,15 @@ async function init() {
   $("stop").onclick = () => stop();
   document.addEventListener("visibilitychange", () => { if (document.hidden && timer) stop("Stopped (the app went to the background)."); });
 
-  audioSession("playback");
-  ctx = new AudioContext({ latencyHint: "interactive" });
-  sampler = new Sampler(ctx, { normalize: true });
-  sampler.setVolume(settings.volume);
-  await sampler.load("", p => status(`Loading the orchestra… ${Math.round(p * 100)}%`));
+  samples = await prefetchSamples("", p => status(`Loading the orchestra… ${Math.round(p * 100)}%`));
   $("play").disabled = false;
   status("Ready.");
 }
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-init().catch(e => { status(`Something went wrong loading the app: ${e.message}`, true); console.error(e); });
+if ("serviceWorker" in navigator) {
+  // when a new version takes over, reload once so the page and its files match
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController) location.reload(); });
+  navigator.serviceWorker.register("sw.js").then(r => r.update()).catch(() => {});
+}
+init().catch(e => { status(`Something went wrong loading the app: ${explain(e)}`, true); console.error(e); });

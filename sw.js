@@ -1,6 +1,6 @@
 // Offline support: keep every file of the app in a cache. Bump VERSION
 // whenever any file changes, so phones fetch the new version.
-const VERSION = "c2c2b0cf14";
+const VERSION = "32ce8658c3";
 const FILES = [
   "./", "index.html", "style.css", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png",
   "js/app.js", "js/score.js", "js/follower.js", "js/engine.js", "js/micfront.js", "js/sampler.js",
@@ -14,7 +14,10 @@ const FILES = [
 ];
 
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // fresh copies (not the browser's HTTP cache), all from this version
+  e.waitUntil(caches.open(VERSION)
+    .then(c => c.addAll(FILES.map(f => new Request(f, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", e => {
@@ -23,7 +26,20 @@ self.addEventListener("activate", e => {
     .then(() => self.clients.claim()));
 });
 
+// The page, code and data: the network first (so an update is never half
+// applied), this version's copy when offline. The sounds: this version's copy.
 self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
-  e.respondWith(caches.match(e.request, { ignoreSearch: true }).then(hit => hit || fetch(e.request)));
+  const url = new URL(e.request.url);
+  if (url.pathname.endsWith(".mp3")) {
+    e.respondWith(caches.open(VERSION).then(c => c.match(e.request, { ignoreSearch: true })
+      .then(hit => hit || fetch(e.request))));
+    return;
+  }
+  e.respondWith(fetch(e.request, { cache: "no-cache" })
+    .then(r => {
+      if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(e.request, copy)); }
+      return r;
+    })
+    .catch(() => caches.open(VERSION).then(c => c.match(e.request, { ignoreSearch: true }))));
 });

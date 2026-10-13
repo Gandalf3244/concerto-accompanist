@@ -14,15 +14,21 @@ export class Sampler {
     this.normalize = normalize;
     this.out = ctx.createGain();
     this.out.gain.value = 0.9;
-    // a little hall: a synthetic impulse response (decaying noise)
-    const len = Math.floor(ctx.sampleRate * 2.2);
-    const ir = ctx.createBuffer(2, len, ctx.sampleRate);
-    for (let ch = 0; ch < 2; ch++) {
-      const d = ir.getChannelData(ch);
-      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.45));
+    // a little hall: a synthetic impulse response (decaying noise); without
+    // it if the browser will not make one
+    const sr = ctx.sampleRate > 0 ? ctx.sampleRate : 48000;
+    try {
+      const len = Math.floor(sr * 2.2);
+      const ir = ctx.createBuffer(2, len, sr);
+      for (let ch = 0; ch < 2; ch++) {
+        const d = ir.getChannelData(ch);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sr * 0.45));
+      }
+      this.reverb = ctx.createConvolver();
+      this.reverb.buffer = ir;
+    } catch (e) {
+      reverb = false;
     }
-    this.reverb = ctx.createConvolver();
-    this.reverb.buffer = ir;
     const wet = ctx.createGain();
     wet.gain.value = 0.12;
     this.comp = ctx.createDynamicsCompressor();
@@ -40,13 +46,17 @@ export class Sampler {
   setVolume(v) { this.out.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05); }
 
   async load(base, onProgress = () => {}) {
-    const index = await (await fetch(base + "samples/index.json")).json();
+    return this.decode(await prefetchSamples(base), onProgress);
+  }
+
+  // decode samples fetched by prefetchSamples (each only once: decoding uses up the bytes)
+  async decode({ index, bytes: all }, onProgress = () => {}) {
     this.refLevel = index.ref_level ?? 0; // dB (A-weighted) every sample is brought to, when normalizing
     const names = Object.keys(index.sets);
     let done = 0;
     await Promise.all(names.map(async name => {
       const s = index.sets[name];
-      const bytes = await (await fetch(base + s.file)).arrayBuffer();
+      const bytes = all[name];
       const buffer = await new Promise((ok, fail) => this.ctx.decodeAudioData(bytes, ok, fail));
       const data = buffer.getChannelData(0);
       const sr = buffer.sampleRate;
@@ -125,4 +135,20 @@ export class Sampler {
       try { src.stop(t + 0.15); } catch (e) { /* already stopped */ }
     }
   }
+}
+
+// Download the sample files (no audio context needed yet: iOS wants that made
+// when the player taps Play).
+export async function prefetchSamples(base, onProgress = () => {}) {
+  const index = await (await fetch(base + "samples/index.json")).json();
+  const names = Object.keys(index.sets);
+  const bytes = {};
+  let done = 0;
+  await Promise.all(names.map(async name => {
+    const r = await fetch(base + index.sets[name].file);
+    if (!r.ok) throw new Error(`could not download ${index.sets[name].file} (${r.status})`);
+    bytes[name] = await r.arrayBuffer();
+    onProgress(++done / names.length);
+  }));
+  return { index, bytes };
 }

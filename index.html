@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Concerto Accompanist</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Concerto">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#16141f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Prokofiev 3 <span>· I. Andante – Allegro</span></h1>
+  </header>
+
+  <section id="stage" class="card">
+    <div class="readout">
+      <div><label>Bar</label><output id="bar">–</output></div>
+      <div><label>Beat</label><output id="beat">–</output></div>
+      <div><label>♩ =</label><output id="tempo">–</output></div>
+    </div>
+    <p id="status" aria-live="polite">Loading the orchestra…</p>
+    <div class="meter" title="What the app hears"><div id="level"></div><span id="heard"></span></div>
+    <div class="transport">
+      <button id="play" class="primary" disabled>Play</button>
+      <button id="stop" hidden>Stop</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Start at bar</h2>
+    <div class="stepper">
+      <button data-step="-10">−10</button><button data-step="-1">−1</button>
+      <input id="startBar" type="number" inputmode="numeric" min="1" value="1">
+      <button data-step="1">+1</button><button data-step="10">+10</button>
+    </div>
+    <p class="hint" id="startHint"></p>
+  </section>
+
+  <section class="card">
+    <h2>Listen to my playing with</h2>
+    <div class="seg" id="inputMode">
+      <button data-mode="mic">Microphone</button>
+      <button data-mode="midi">MIDI (cable / Bluetooth)</button>
+    </div>
+    <p class="hint" id="inputHint"></p>
+    <label class="row" id="echoRow" hidden><input type="checkbox" id="echo"> Play my piano through the app too</label>
+    <label class="row" id="aecRow" hidden><input type="checkbox" id="aec"> Cancel the orchestra's sound from the
+      microphone (try this if you play through the phone's own speaker and it loses you)</label>
+  </section>
+
+  <section class="card">
+    <h2>Orchestra-only passages</h2>
+    <p class="hint">Where you don't play, the orchestra keeps its own tempo. Set it here (quarter notes per minute).
+      Everywhere else it follows you.</p>
+    <div id="sections"></div>
+    <button id="resetTempos" class="small">Reset to the score's tempos</button>
+  </section>
+
+  <section class="card">
+    <h2>Sound</h2>
+    <label class="row">Orchestra volume <input type="range" id="volume" min="0" max="1.5" step="0.05" value="0.9"></label>
+    <label class="row">Speaker delay <input type="range" id="latency" min="0" max="350" step="10" value="0">
+      <output id="latencyOut">0 ms</output></label>
+    <p class="hint">Bluetooth speakers and headphones play late (often 150–250 ms). If the orchestra sounds
+      behind you, raise this until it's together.</p>
+    <details>
+      <summary>Instruments</summary>
+      <div id="parts" class="parts"></div>
+    </details>
+  </section>
+
+  <footer class="hint">Works offline once loaded. Use headphones with the microphone, or keep the phone's
+    speaker away from it, so the app doesn't hear the orchestra instead of you.</footer>
+</main>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

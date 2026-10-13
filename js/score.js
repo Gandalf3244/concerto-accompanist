@@ -22,7 +22,8 @@ export class Score {
     this.parts = data.parts;
     this.chords = data.chords.map(([beat, ps]) => ({ beat, pitches: new Set(ps), matched: new Set() }));
     this.orchestra = data.orch.map(([beat, dur, pitch, part, velocity, tremolo, flags = 0, balance = 0]) =>
-      ({ beat, dur, pitch, part: data.parts[part].id, partIdx: part, velocity, tremolo, pizz: !!(flags & 1), balance }));
+      ({ beat, dur, pitch, part: data.parts[part].id, partIdx: part, velocity, tremolo, pizz: !!(flags & 1),
+         legato: !!(flags & 2), stacc: !!(flags & 4), balance }));
     this.tempoMap = tempoMap || data.tempo;
   }
 

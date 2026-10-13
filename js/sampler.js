@@ -76,7 +76,12 @@ export class Sampler {
   get loaded() { return Object.keys(this.sets).length > 0; }
 
   // play `pitch` from sample set `name` at context time `when` for `dur` seconds
-  play(name, pitch, velocity, when, dur, gain = 1) {
+  // artic: "legato" (continuing a slur: no new attack, runs into the next
+  // note), "stacc" (short), else détaché (a clean start, a breath before the next)
+  play(name, pitch, velocity, when, dur, gain = 1, artic = null) {
+    if (artic === "legato") dur = dur + 0.06;
+    else if (artic === "stacc") dur = Math.max(Math.min(dur * 0.5, 0.25), Math.min(dur * 0.9, 0.09)); // short, but heard
+    else dur = dur * 0.92;
     const s = this.sets[name];
     if (!s) return;
     let k = 0;
@@ -98,7 +103,7 @@ export class Sampler {
     if (s.attack) {
       // bring a slowly swelling sample (bowed strings) to its level quickly:
       // within 15 ms for short notes, 60 ms for long ones
-      const curve = s.attack[dur < SHORT ? "short" : "long"][k];
+      const curve = s.attack[artic === "legato" || (artic !== "stacc" && dur >= SHORT) ? "long" : "short"][k];
       const a = new GainNode(this.ctx, { gain: curve[0] });
       a.gain.setValueCurveAtTime(curve, start, curve.length * s.step / rate);
       src.connect(a).connect(g).connect(this.out);
@@ -106,7 +111,7 @@ export class Sampler {
       src.connect(g).connect(this.out);
     }
     g.gain.setValueAtTime(amp, start);
-    const rel = RELEASE[name] ?? 0.1;
+    const rel = (RELEASE[name] ?? 0.1) * (artic === "legato" ? 1.6 : 1);
     const natural = s.loop ? Infinity : held / rate;
     const end = start + Math.min(Math.max(dur, 0.03), natural);
     g.gain.setTargetAtTime(0, end, rel / 4);

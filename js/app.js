@@ -365,7 +365,8 @@ function tick() {
     const vel = Math.max(20, Math.min(127, note.velocity + part.vel - 75));
     // balance: the lead lifted, accompaniment shaded, sections at their power (tools/balance.py)
     const bal = settings.balance ? 10 ** (note.balance * settings.shaping / 100 / 20) : 1;
-    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95, phrasing(note.beat) * bal);
+    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate, phrasing(note.beat) * bal,
+                 note.legato ? "legato" : note.stacc ? "stacc" : null);
     debug.played++;
   }
   if (!engine.started) return;

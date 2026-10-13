@@ -25,6 +25,7 @@ const settings = {
   volume: store.get("volume", 0.9),
   latencyMs: store.get("latencyMs", 0),
   phrasing: store.get("phrasing", true),
+  balance: store.get("balance", true),
   muted: new Set(store.get("muted", [])),
   tempos: store.get("tempos", {}),     // "sectionStart@rowBeat" -> bpm (score tempos)
   modes: store.get("modes", {}),       // section start beat -> "recording" | "score" | "keep"
@@ -33,7 +34,7 @@ const settings = {
 for (const a of store.get("keep", [])) settings.modes[a] ??= "keep"; // older setting
 const save = () => {
   store.set("startBar", settings.startBar); store.set("mode", settings.mode); store.set("echo", settings.echo); store.set("aec", settings.aec);
-  store.set("volume", settings.volume); store.set("latencyMs", settings.latencyMs); store.set("phrasing", settings.phrasing);
+  store.set("volume", settings.volume); store.set("latencyMs", settings.latencyMs); store.set("phrasing", settings.phrasing); store.set("balance", settings.balance);
   store.set("muted", [...settings.muted]); store.set("tempos", settings.tempos); store.set("modes", settings.modes); store.set("speed", settings.speed);
 };
 
@@ -359,7 +360,9 @@ function tick() {
     const part = data.parts[note.partIdx];
     const set = soundFor(part, note);
     const vel = Math.max(20, Math.min(127, note.velocity + part.vel - 75));
-    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95, phrasing(note.beat));
+    // balance: the lead lifted, accompaniment shaded, sections at their power (tools/balance.py)
+    const bal = settings.balance ? 10 ** (note.balance / 20) : 1;
+    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95, phrasing(note.beat) * bal);
     debug.played++;
   }
   if (!engine.started) return;
@@ -439,6 +442,8 @@ async function init() {
     b.onclick = () => { settings.mode = b.dataset.mode; save(); renderInputMode(); if (settings.mode !== "mic") stopMic(); };
   }
   $("phrasing").checked = settings.phrasing;
+  $("balance").checked = settings.balance;
+  $("balance").onchange = e => { settings.balance = e.target.checked; save(); };
   $("phrasing").onchange = e => { settings.phrasing = e.target.checked; save(); };
   $("echo").checked = settings.echo;
   $("echo").onchange = e => { settings.echo = e.target.checked; save(); };
@@ -455,7 +460,7 @@ async function init() {
 
   audioSession("playback");
   ctx = new AudioContext({ latencyHint: "interactive" });
-  sampler = new Sampler(ctx);
+  sampler = new Sampler(ctx, { normalize: true });
   sampler.setVolume(settings.volume);
   await sampler.load("", p => status(`Loading the orchestra… ${Math.round(p * 100)}%`));
   $("play").disabled = false;

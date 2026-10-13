@@ -7,8 +7,11 @@ const SHORT = 0.35; // s; notes shorter than this get the fast attack
 const RELEASE = { violins1: 0.18, violins2: 0.18, violas: 0.18, celli: 0.2, basses: 0.22, tremolo: 0.18, timpani: 0.8, piano: 0.5, drums: 0.6 }; // s; others 0.1
 
 export class Sampler {
-  constructor(ctx, { reverb = true } = {}) {
+  // normalize: bring every sample to one perceived level (index.json "level"),
+  // so the balance between instruments is set by the score's balance gains
+  constructor(ctx, { reverb = true, normalize = true } = {}) {
     this.ctx = ctx;
+    this.normalize = normalize;
     this.out = ctx.createGain();
     this.out.gain.value = 0.9;
     // a little hall: a synthetic impulse response (decaying noise)
@@ -38,6 +41,7 @@ export class Sampler {
 
   async load(base, onProgress = () => {}) {
     const index = await (await fetch(base + "samples/index.json")).json();
+    this.refLevel = index.ref_level ?? 0; // dB (A-weighted) every sample is brought to, when normalizing
     const names = Object.keys(index.sets);
     let done = 0;
     await Promise.all(names.map(async name => {
@@ -54,7 +58,7 @@ export class Sampler {
       });
       const attack = s.attack && Object.fromEntries(["short", "long"].map(k => [k, s.attack[k].map(c => Float32Array.from(c))]));
       this.sets[name] = { buffer, pitches: s.pitches, onsets, loop: s.loop, slot: index.slot, pad: index.pad,
-                          loopPts: index.loop, attack, step: s.attack?.step };
+                          loopPts: index.loop, attack, step: s.attack?.step, level: s.level };
       onProgress(++done / names.length);
     }));
   }
@@ -77,7 +81,9 @@ export class Sampler {
       src.loopEnd = on + s.loopPts[1];
     }
     const g = new GainNode(this.ctx, { gain: 0 });
-    const amp = Math.min(1.6, (velocity / 100) ** 2) * gain;
+    // the sample's own loudness taken out (to REF_LEVEL), if measured
+    const norm = this.normalize && s.level ? 10 ** ((this.refLevel - s.level[k]) / 20) : 1;
+    const amp = Math.min(1.6, (velocity / 100) ** 2) * gain * Math.min(4, norm);
     const start = Math.max(when, this.ctx.currentTime);
     if (s.attack) {
       // bring a slowly swelling sample (bowed strings) to its level quickly:

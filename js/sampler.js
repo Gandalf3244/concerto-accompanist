@@ -79,9 +79,10 @@ export class Sampler {
   // artic: "legato" (continuing a slur: no new attack, runs into the next
   // note), "stacc" (short), else détaché (a clean start, a breath before the next)
   play(name, pitch, velocity, when, dur, gain = 1, artic = null) {
-    if (artic === "legato") dur = dur + 0.06;
-    else if (artic === "stacc") dur = Math.max(Math.min(dur * 0.5, 0.25), Math.min(dur * 0.9, 0.09)); // short, but heard
-    else dur = dur * 0.92;
+    if (this.legacy) { artic = "legacy"; dur *= 0.95; } // the earlier shaping (for comparisons)
+    else if (artic === "legato") dur = dur + 0.06;
+    else if (artic === "stacc") dur = Math.min(Math.max(dur * 0.7, Math.min(dur, 0.12)), 0.4); // shorter, still sung
+    else dur = dur * 0.97; // separate bows, hardly a gap
     const s = this.sets[name];
     if (!s) return;
     let k = 0;
@@ -103,10 +104,19 @@ export class Sampler {
     if (s.attack) {
       // bring a slowly swelling sample (bowed strings) to its level quickly:
       // within 15 ms for short notes, 60 ms for long ones
-      const curve = s.attack[artic === "legato" || (artic !== "stacc" && dur >= SHORT) ? "long" : "short"][k];
-      const a = new GainNode(this.ctx, { gain: curve[0] });
-      a.gain.setValueCurveAtTime(curve, start, curve.length * s.step / rate);
-      src.connect(a).connect(g).connect(this.out);
+      // how quickly the note speaks: fast notes crisply, medium ones gently,
+      // long and legato ones with the instrument's own swell (a sung line)
+      const kind = artic === "legacy" ? (dur < 0.35 ? "short" : "long")
+        : artic === "legato" ? (dur < 0.25 ? "long" : null)
+        : dur < 0.2 || artic === "stacc" ? "short" : dur < 0.6 ? "long" : null;
+      if (kind) {
+        const curve = s.attack[kind][k];
+        const a = new GainNode(this.ctx, { gain: curve[0] });
+        a.gain.setValueCurveAtTime(curve, start, curve.length * s.step / rate);
+        src.connect(a).connect(g).connect(this.out);
+      } else {
+        src.connect(g).connect(this.out);
+      }
     } else {
       src.connect(g).connect(this.out);
     }

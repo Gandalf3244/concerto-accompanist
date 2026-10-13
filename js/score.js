@@ -21,15 +21,16 @@ export class Score {
     this.nMeasures = data.measures;
     this.parts = data.parts;
     this.chords = data.chords.map(([beat, ps]) => ({ beat, pitches: new Set(ps), matched: new Set() }));
-    this.orchestra = data.orch.map(([beat, dur, pitch, part, velocity, tremolo]) =>
-      ({ beat, dur, pitch, part: data.parts[part].id, partIdx: part, velocity, tremolo }));
+    this.orchestra = data.orch.map(([beat, dur, pitch, part, velocity, tremolo, flags = 0]) =>
+      ({ beat, dur, pitch, part: data.parts[part].id, partIdx: part, velocity, tremolo, pizz: !!(flags & 1) }));
     this.tempoMap = tempoMap || data.tempo;
   }
 
-  nominalBpm(beat) {
-    let bpm = this.tempoMap[0][1];
-    for (const [b, t] of this.tempoMap) if (b <= beat) bpm = t;
-    return bpm;
+  nominalBpm(beat) { // the last entry at or before beat (the map is sorted)
+    const m = this.tempoMap;
+    let lo = 0, hi = m.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (m[mid][0] <= beat) lo = mid + 1; else hi = mid; }
+    return m[Math.max(0, lo - 1)][1];
   }
 
   // Orchestra-only passages: [start, end] beats between piano chords at least

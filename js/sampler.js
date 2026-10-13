@@ -7,7 +7,7 @@ const SHORT = 0.35; // s; notes shorter than this get the fast attack
 const RELEASE = { violins1: 0.18, violins2: 0.18, violas: 0.18, celli: 0.2, basses: 0.22, tremolo: 0.18, timpani: 0.8, piano: 0.5, drums: 0.6 }; // s; others 0.1
 
 export class Sampler {
-  constructor(ctx) {
+  constructor(ctx, { reverb = true } = {}) {
     this.ctx = ctx;
     this.out = ctx.createGain();
     this.out.gain.value = 0.9;
@@ -27,7 +27,7 @@ export class Sampler {
     this.comp.knee.value = 10;
     this.comp.ratio.value = 4;
     this.out.connect(this.comp);
-    this.out.connect(this.reverb).connect(wet).connect(this.comp);
+    if (reverb) this.out.connect(this.reverb).connect(wet).connect(this.comp);
     this.comp.connect(ctx.destination);
     this.output = this.comp; // the final mix, as sent to the speaker
     this.sets = {};
@@ -62,7 +62,7 @@ export class Sampler {
   get loaded() { return Object.keys(this.sets).length > 0; }
 
   // play `pitch` from sample set `name` at context time `when` for `dur` seconds
-  play(name, pitch, velocity, when, dur) {
+  play(name, pitch, velocity, when, dur, gain = 1) {
     const s = this.sets[name];
     if (!s) return;
     let k = 0;
@@ -77,7 +77,7 @@ export class Sampler {
       src.loopEnd = on + s.loopPts[1];
     }
     const g = new GainNode(this.ctx, { gain: 0 });
-    const amp = Math.min(1.6, (velocity / 100) ** 2);
+    const amp = Math.min(1.6, (velocity / 100) ** 2) * gain;
     const start = Math.max(when, this.ctx.currentTime);
     if (s.attack) {
       // bring a slowly swelling sample (bowed strings) to its level quickly:

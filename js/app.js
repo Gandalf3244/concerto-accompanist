@@ -24,14 +24,17 @@ const settings = {
   aec: store.get("aec", false),
   volume: store.get("volume", 0.9),
   latencyMs: store.get("latencyMs", 0),
+  phrasing: store.get("phrasing", true),
   muted: new Set(store.get("muted", [])),
-  tempos: store.get("tempos", {}),     // "sectionStart@rowBeat" -> bpm
-  keep: new Set(store.get("keep", [])), // sections that keep the soloist's tempo (by start beat)
+  tempos: store.get("tempos", {}),     // "sectionStart@rowBeat" -> bpm (score tempos)
+  modes: store.get("modes", {}),       // section start beat -> "recording" | "score" | "keep"
+  speed: store.get("speed", {}),       // section start beat -> % of the recording's tempo
 };
+for (const a of store.get("keep", [])) settings.modes[a] ??= "keep"; // older setting
 const save = () => {
   store.set("startBar", settings.startBar); store.set("mode", settings.mode); store.set("echo", settings.echo); store.set("aec", settings.aec);
-  store.set("volume", settings.volume); store.set("latencyMs", settings.latencyMs);
-  store.set("muted", [...settings.muted]); store.set("tempos", settings.tempos); store.set("keep", [...settings.keep]);
+  store.set("volume", settings.volume); store.set("latencyMs", settings.latencyMs); store.set("phrasing", settings.phrasing);
+  store.set("muted", [...settings.muted]); store.set("tempos", settings.tempos); store.set("modes", settings.modes); store.set("speed", settings.speed);
 };
 
 // ------------------------------------------------------------ state
@@ -55,21 +58,35 @@ function status(text, warn = false) {
 }
 
 // ------------------------------------------------------------ tempo settings
-// Each orchestra-only section lists the score's tempos in it (the one in force
-// where it starts, and any changes inside); the player can change each.
+// Each orchestra-only section plays either like the recording (its tempo
+// curve, with the slowing and pressing on, at a speed the player can scale),
+// at the score's tempos (each changeable), or at the player's last tempo.
 function sectionRows(a, b) {
   const rows = [[a, ref.nominalBpm(a)]];
   for (const [beat, bpm] of data.tempo) if (beat > a && beat < b) rows.push([beat, bpm]);
   return rows;
 }
 
+const recTempo = a => (data.recTempo || []).find(r => Math.abs(r.start - a) < 1e-6);
+const sectionMode = a => settings.modes[a] ?? (recTempo(a) ? "recording" : "score");
+
 function effectiveTempoMap() {
   const sections = ref.orchestraSections();
   const points = new Set(data.tempo.map(r => r[0]));
-  for (const [a, b] of sections) { points.add(a); points.add(b); }
+  for (const [a, b] of sections) {
+    points.add(a); points.add(b);
+    const rt = recTempo(a);
+    if (sectionMode(a) === "recording" && rt) for (const [beat] of rt.bpm) if (beat >= a && beat < b) points.add(beat);
+  }
   const at = beat => {
     for (const [a, b] of sections) {
       if (a <= beat && beat < b) {
+        const rt = recTempo(a);
+        if (sectionMode(a) === "recording" && rt) {
+          let v = rt.bpm[0][1];
+          for (const [rb, bpm] of rt.bpm) if (rb <= beat) v = bpm;
+          return Math.round(v * (settings.speed[a] ?? 100) / 100 * 10) / 10;
+        }
         let bpm = null;
         for (const [rb, base] of sectionRows(a, b)) if (rb <= beat) bpm = settings.tempos[`${a}@${rb}`] ?? base;
         return bpm;
@@ -86,59 +103,88 @@ function effectiveTempoMap() {
   return map;
 }
 
+function numberInput(value, min, max, onset) {
+  const input = document.createElement("input");
+  input.type = "number"; input.inputMode = "numeric"; input.min = min; input.max = max;
+  input.value = value;
+  input.onchange = () => {
+    const v = Math.round(+input.value);
+    if (!(v >= min && v <= max)) { input.value = value; return; }
+    value = v;
+    onset(v, input);
+  };
+  return input;
+}
+
 function renderSections() {
   const box = $("sections");
   box.innerHTML = "";
   for (const [a, b] of ref.orchestraSections()) {
+    const rt = recTempo(a);
     const div = document.createElement("div");
-    div.className = "section" + (settings.keep.has(a) ? " keep" : "");
+    div.className = "section";
     const head = document.createElement("div");
     head.className = "head";
     head.innerHTML = `<b>${fmtBars(a, b)}</b>`;
-    if (a > 0) { // the opening has no tempo of yours to keep
-      const sel = document.createElement("select");
-      sel.innerHTML = `<option value="own">Tempo below</option><option value="keep">Keep my last tempo</option>`;
-      sel.value = settings.keep.has(a) ? "keep" : "own";
-      sel.onchange = () => {
-        if (sel.value === "keep") settings.keep.add(a); else settings.keep.delete(a);
-        div.classList.toggle("keep", sel.value === "keep");
-        save();
-      };
-      head.append(sel);
-    }
+    const sel = document.createElement("select");
+    sel.innerHTML = (rt ? `<option value="recording">Like the recording</option>` : "")
+      + `<option value="score">Steady, score tempos</option>`
+      + (a > 0 ? `<option value="keep">Keep my last tempo</option>` : ""); // the opening has no tempo of yours
+    sel.value = sectionMode(a);
+    sel.onchange = () => { settings.modes[a] = sel.value; save(); fill(); };
     const go = document.createElement("button");
     go.className = "small";
     go.textContent = "Start here";
     go.style.marginTop = "0";
     go.onclick = () => { setStartBar(barOf(a)); window.scrollTo({ top: 0, behavior: "smooth" }); };
-    head.append(go);
+    head.append(sel, go);
     div.append(head);
     const tempi = document.createElement("div");
     tempi.className = "tempi";
-    for (const [rb, base] of sectionRows(a, b)) {
-      const key = `${a}@${rb}`;
-      const row = document.createElement("label");
-      row.className = "tempo";
-      const span = document.createElement("span");
-      span.textContent = rb === a ? (a === 0 ? "From the start" : `From bar ${barOf(a)}`) : `From bar ${barOf(rb)}`;
-      const input = document.createElement("input");
-      input.type = "number"; input.inputMode = "numeric"; input.min = 20; input.max = 260;
-      input.value = settings.tempos[key] ?? base;
-      const mark = () => input.classList.toggle("changed", +input.value !== base);
-      mark();
-      input.onchange = () => {
-        const v = Math.round(+input.value);
-        if (!(v >= 20 && v <= 260)) { input.value = settings.tempos[key] ?? base; return; }
-        if (v === base) delete settings.tempos[key]; else settings.tempos[key] = v;
-        mark(); save();
-      };
-      const unit = document.createElement("small");
-      unit.textContent = `score ${base}`;
-      unit.style.color = "var(--dim)";
-      row.append(span, input, unit);
-      tempi.append(row);
-    }
     div.append(tempi);
+    const fill = () => {
+      tempi.innerHTML = "";
+      const mode = sectionMode(a);
+      div.classList.toggle("keep", mode === "keep");
+      if (mode === "recording") {
+        const vals = rt.bpm.map(r => r[1]);
+        const row = document.createElement("label");
+        row.className = "tempo";
+        const span = document.createElement("span");
+        span.textContent = `Speed (the recording goes ♩≈${Math.round(Math.min(...vals))}–${Math.round(Math.max(...vals))})`;
+        const input = numberInput(settings.speed[a] ?? 100, 50, 150, (v, el) => {
+          if (v === 100) delete settings.speed[a]; else settings.speed[a] = v;
+          el.classList.toggle("changed", v !== 100);
+          save();
+        });
+        input.classList.toggle("changed", (settings.speed[a] ?? 100) !== 100);
+        const unit = document.createElement("small");
+        unit.textContent = "%";
+        unit.style.color = "var(--dim)";
+        row.append(span, input, unit);
+        tempi.append(row);
+        return;
+      }
+      for (const [rb, base] of sectionRows(a, b)) {
+        const key = `${a}@${rb}`;
+        const row = document.createElement("label");
+        row.className = "tempo";
+        const span = document.createElement("span");
+        span.textContent = rb === a ? (a === 0 ? "From the start" : `From bar ${barOf(a)}`) : `From bar ${barOf(rb)}`;
+        const input = numberInput(settings.tempos[key] ?? base, 20, 260, (v, el) => {
+          if (v === base) delete settings.tempos[key]; else settings.tempos[key] = v;
+          el.classList.toggle("changed", v !== base);
+          save();
+        });
+        input.classList.toggle("changed", (settings.tempos[key] ?? base) !== base);
+        const unit = document.createElement("small");
+        unit.textContent = `score ${base}`;
+        unit.style.color = "var(--dim)";
+        row.append(span, input, unit);
+        tempi.append(row);
+      }
+    };
+    fill();
     box.append(div);
   }
 }
@@ -281,6 +327,25 @@ function onset(o) {
 }
 
 // ------------------------------------------------------------ playing
+const BOWED = ["violins1", "violins2", "violas", "celli", "basses"];
+// which sample set plays a note: plucked or tremolo strings have their own
+function soundFor(part, note) {
+  if (BOWED.includes(part.set)) {
+    if (note.pizz && sampler.sets[part.set + "_pizz"]) return part.set + "_pizz";
+    if (note.tremolo >= 3) return "tremolo";
+  }
+  return part.set;
+}
+
+// how much louder or softer than written the orchestra plays here, from the
+// recording (a gain per beat; tools/expression.py)
+function phrasing(beat) {
+  const g = data.gain;
+  if (!g || !settings.phrasing) return 1;
+  const i = Math.max(0, Math.min(g.length - 1, Math.floor(beat))), j = Math.min(g.length - 1, i + 1), f = beat - Math.floor(beat);
+  return 10 ** (((1 - f) * g[i] + f * g[j]) / 20);
+}
+
 function latency() {
   return (ctx.outputLatency || ctx.baseLatency || 0) + settings.latencyMs / 1000;
 }
@@ -292,9 +357,9 @@ function tick() {
   for (const { note, time } of engine.tick(now, AHEAD + lat)) {
     if (settings.muted.has(note.part)) continue;
     const part = data.parts[note.partIdx];
-    const set = ["violins1", "violins2", "violas", "celli", "basses"].includes(part.set) && note.tremolo >= 3 ? "tremolo" : part.set;
+    const set = soundFor(part, note);
     const vel = Math.max(20, Math.min(127, note.velocity + part.vel - 75));
-    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95);
+    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95, phrasing(note.beat));
     debug.played++;
   }
   if (!engine.started) return;
@@ -330,7 +395,7 @@ async function play() {
   const score = new Score(data, effectiveTempoMap());
   const startBeat = score.beatOfMeasure(settings.startBar);
   engine = new Engine(score, startBeat, 1.0, settings.mode === "mic");
-  engine.keepTempo = new Set(engine.sections.map(([a], i) => (settings.keep.has(a) ? i : -1)).filter(i => i >= 0));
+  engine.keepTempo = new Set(engine.sections.map(([a], i) => (sectionMode(a) === "keep" ? i : -1)).filter(i => i >= 0));
   front = settings.mode === "mic" ? new AudioFrontEnd(ctx.sampleRate) : null;
   orchestraFirst = !engine.soloistActive(startBeat + 0.5);
   endAt = null;
@@ -373,6 +438,8 @@ async function init() {
   for (const b of $("inputMode").querySelectorAll("button")) {
     b.onclick = () => { settings.mode = b.dataset.mode; save(); renderInputMode(); if (settings.mode !== "mic") stopMic(); };
   }
+  $("phrasing").checked = settings.phrasing;
+  $("phrasing").onchange = e => { settings.phrasing = e.target.checked; save(); };
   $("echo").checked = settings.echo;
   $("echo").onchange = e => { settings.echo = e.target.checked; save(); };
   $("aec").checked = settings.aec;
@@ -381,7 +448,7 @@ async function init() {
   $("latency").oninput = e => {
     settings.latencyMs = +e.target.value; $("latencyOut").textContent = `${settings.latencyMs} ms`; save();
   };
-  $("resetTempos").onclick = () => { settings.tempos = {}; settings.keep.clear(); save(); renderSections(); };
+  $("resetTempos").onclick = () => { settings.tempos = {}; settings.modes = {}; settings.speed = {}; save(); renderSections(); };
   $("play").onclick = play;
   $("stop").onclick = () => stop();
   document.addEventListener("visibilitychange", () => { if (document.hidden && timer) stop("Stopped (the app went to the background)."); });

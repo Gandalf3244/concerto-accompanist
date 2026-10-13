@@ -58,14 +58,16 @@
 
   <section class="card">
     <h2>Orchestra-only passages</h2>
-    <p class="hint">Where you don't play, the orchestra keeps its own tempo. Set it here (quarter notes per minute).
-      Everywhere else it follows you.</p>
+    <p class="hint">Where you don't play, the orchestra sets the tempo: like the recording (with its slowing and
+      pressing on; you choose the speed), steadily at the score's tempos, or at your last tempo. Everywhere else it
+      follows you.</p>
     <div id="sections"></div>
-    <button id="resetTempos" class="small">Reset to the score's tempos</button>
+    <button id="resetTempos" class="small">Reset tempos</button>
   </section>
 
   <section class="card">
     <h2>Sound</h2>
+    <label class="row"><input type="checkbox" id="phrasing"> Shape the orchestra's dynamics like the recording</label>
     <label class="row">Orchestra volume <input type="range" id="volume" min="0" max="1.5" step="0.05" value="0.9"></label>
     <label class="row">Speaker delay <input type="range" id="latency" min="0" max="350" step="10" value="0">
       <output id="latencyOut">0 ms</output></label>

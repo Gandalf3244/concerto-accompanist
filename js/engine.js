@@ -27,16 +27,17 @@ export class AccompClock {
   }
 
   // Move toward the follower's position/tempo; call often (e.g. every 5 ms).
-  steer(t, targetBeat, targetRate) {
+  // tau / maxAdjust / jumpBeats may be given per call (a steadier orchestra).
+  steer(t, targetBeat, targetRate, tau = this.tau, maxAdjust = this.maxAdjust, jumpBeats = this.jumpBeats) {
     this.advance(t);
     const err = targetBeat - this.beat;
-    if (Math.abs(err) > this.jumpBeats) {
+    if (Math.abs(err) > jumpBeats) {
       this.beat = targetBeat;
       this.rate = targetRate;
       return;
     }
-    let adj = err / this.tau / Math.max(targetRate, 1e-6); // fraction of tempo
-    adj = Math.max(-this.maxAdjust, Math.min(this.maxAdjust, adj));
+    let adj = err / tau / Math.max(targetRate, 1e-6); // fraction of tempo
+    adj = Math.max(-maxAdjust, Math.min(maxAdjust, adj));
     this.rate = targetRate * (1.0 + adj);
   }
 
@@ -63,6 +64,26 @@ export class Engine {
     this.sections = score.orchestraSections();
     // sections where the orchestra keeps the soloist's last tempo instead of its own
     this.keepTempo = new Set();
+    this.plan = null; // tempo plan (setPlan): the orchestra keeps steady between its key spots
+  }
+
+  // A tempo plan: per bar [bar, bpm, flex] (tools/tempo_plan.py). In a steady
+  // bar the orchestra keeps the section's tempo (scaled to the player's pace,
+  // which is re-judged only where a new section starts), leans only a little
+  // toward the soloist's momentary tempo and closes a gap only gently; in a
+  // flexible bar (rit., rubato, a change of section) it follows closely.
+  setPlan(bars, { lean = 0.04, tau = 4.0, maxAdjust = 0.05, jumpBeats = 4.0, settle = 8 } = {}) {
+    this.plan = { bars, lean, tau, maxAdjust, jumpBeats, settle };
+    this.pace = null;       // player's tempo / the plan's, set once the player has settled
+    this.paceSum = 0; this.paceN = 0;
+    this.section = null;    // which steady section we are in (index of its first bar)
+    this.matches = 0;
+  }
+
+  planAt(beat) {
+    const bars = this.plan.bars;
+    const i = Math.max(0, Math.min(bars.length - 1, Math.floor(beat / 4)));
+    return { bpm: bars[i][1], flex: !!bars[i][2], bar: i };
   }
 
   // index of the orchestra-only section containing beat, or -1
@@ -99,6 +120,41 @@ export class Engine {
     return b;
   }
 
+  steerPlanned(t) {
+    const f = this.follower, P = this.plan;
+    const here = this.planAt(this.clock.beat);
+    const solo = 1.0 / f.spb;
+    const ref = here.bpm / 60.0;
+    // the start of a steady section (after a flexible stretch): take the
+    // player's pace over the last one, as a conductor would
+    const sectionStart = here.flex ? null : this.sectionStartOf(here.bar);
+    if (sectionStart !== this.section) {
+      if (this.paceN >= P.settle) this.pace = Math.max(0.7, Math.min(1.3, this.paceSum / this.paceN));
+      this.paceSum = 0; this.paceN = 0;
+      this.section = sectionStart;
+    }
+    if (f.lastTime !== null && f.lastTime !== this.lastSeen) {
+      this.lastSeen = f.lastTime;
+      this.paceSum += solo / ref; this.paceN++;
+      if (this.pace === null && this.paceN >= P.settle) this.pace = this.paceSum / this.paceN;
+    }
+    if (here.flex || this.pace === null) {
+      // a key spot (or the player has not settled yet): follow closely
+      this.clock.steer(t, f.position(t), solo);
+      return;
+    }
+    const base = ref * this.pace;
+    const lean = Math.max(-P.lean, Math.min(P.lean, 0.5 * (solo / base - 1)));
+    this.clock.steer(t, f.position(t), base * (1 + lean), P.tau, P.maxAdjust, P.jumpBeats);
+  }
+
+  // first bar of the steady stretch containing bar i (bars between flexible ones)
+  sectionStartOf(i) {
+    const bars = this.plan.bars;
+    while (i > 0 && !bars[i - 1][2] && Math.abs(bars[i - 1][1] - bars[i][1]) < 1e-6) i--;
+    return i;
+  }
+
   // Advance to time t; return orchestra notes due, each with the time it is
   // due at. ahead > 0 also returns the notes due within the next `ahead`
   // seconds at the current tempo (so they can be scheduled precisely).
@@ -106,7 +162,8 @@ export class Engine {
     if (!this.started) return [];
     const f = this.follower;
     if (this.soloistActive(this.clock.beat) && f.lastTime !== null) {
-      this.clock.steer(t, f.position(t), 1.0 / f.spb);
+      if (!this.plan) this.clock.steer(t, f.position(t), 1.0 / f.spb);
+      else this.steerPlanned(t);
     } else {
       // the orchestra plays alone: its own tempo in an orchestra-only
       // passage, the soloist's last tempo in a short rest

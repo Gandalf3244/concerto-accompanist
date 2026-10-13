@@ -26,6 +26,8 @@ const settings = {
   latencyMs: store.get("latencyMs", 0),
   phrasing: store.get("phrasing", true),
   balance: store.get("balance", true),
+  steady: store.get("steady", true),   // the orchestra keeps its tempo between key spots
+  shaping: store.get("shaping", 75),   // % of the recording's dynamics and of the balance shaping
   muted: new Set(store.get("muted", [])),
   tempos: store.get("tempos", {}),     // "sectionStart@rowBeat" -> bpm (score tempos)
   modes: store.get("modes", {}),       // section start beat -> "recording" | "score" | "keep"
@@ -35,6 +37,7 @@ for (const a of store.get("keep", [])) settings.modes[a] ??= "keep"; // older se
 const save = () => {
   store.set("startBar", settings.startBar); store.set("mode", settings.mode); store.set("echo", settings.echo); store.set("aec", settings.aec);
   store.set("volume", settings.volume); store.set("latencyMs", settings.latencyMs); store.set("phrasing", settings.phrasing); store.set("balance", settings.balance);
+  store.set("steady", settings.steady); store.set("shaping", settings.shaping);
   store.set("muted", [...settings.muted]); store.set("tempos", settings.tempos); store.set("modes", settings.modes); store.set("speed", settings.speed);
 };
 
@@ -344,7 +347,7 @@ function phrasing(beat) {
   const g = data.gain;
   if (!g || !settings.phrasing) return 1;
   const i = Math.max(0, Math.min(g.length - 1, Math.floor(beat))), j = Math.min(g.length - 1, i + 1), f = beat - Math.floor(beat);
-  return 10 ** (((1 - f) * g[i] + f * g[j]) / 20);
+  return 10 ** (((1 - f) * g[i] + f * g[j]) * settings.shaping / 100 / 20);
 }
 
 function latency() {
@@ -361,7 +364,7 @@ function tick() {
     const set = soundFor(part, note);
     const vel = Math.max(20, Math.min(127, note.velocity + part.vel - 75));
     // balance: the lead lifted, accompaniment shaded, sections at their power (tools/balance.py)
-    const bal = settings.balance ? 10 ** (note.balance / 20) : 1;
+    const bal = settings.balance ? 10 ** (note.balance * settings.shaping / 100 / 20) : 1;
     sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate * 0.95, phrasing(note.beat) * bal);
     debug.played++;
   }
@@ -398,6 +401,7 @@ async function play() {
   const score = new Score(data, effectiveTempoMap());
   const startBeat = score.beatOfMeasure(settings.startBar);
   engine = new Engine(score, startBeat, 1.0, settings.mode === "mic");
+  if (settings.steady && data.plan) engine.setPlan(data.plan);
   engine.keepTempo = new Set(engine.sections.map(([a], i) => (sectionMode(a) === "keep" ? i : -1)).filter(i => i >= 0));
   front = settings.mode === "mic" ? new AudioFrontEnd(ctx.sampleRate) : null;
   orchestraFirst = !engine.soloistActive(startBeat + 0.5);
@@ -442,6 +446,11 @@ async function init() {
     b.onclick = () => { settings.mode = b.dataset.mode; save(); renderInputMode(); if (settings.mode !== "mic") stopMic(); };
   }
   $("phrasing").checked = settings.phrasing;
+  $("steady").value = settings.steady ? "steady" : "follow";
+  $("steady").onchange = e => { settings.steady = e.target.value === "steady"; save(); };
+  $("shaping").value = settings.shaping;
+  $("shapingOut").textContent = `${settings.shaping}%`;
+  $("shaping").oninput = e => { settings.shaping = +e.target.value; $("shapingOut").textContent = `${settings.shaping}%`; save(); };
   $("balance").checked = settings.balance;
   $("balance").onchange = e => { settings.balance = e.target.checked; save(); };
   $("phrasing").onchange = e => { settings.phrasing = e.target.checked; save(); };

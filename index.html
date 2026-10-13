@@ -51,6 +51,11 @@
       <button data-mode="midi">MIDI (cable / Bluetooth)</button>
     </div>
     <p class="hint" id="inputHint"></p>
+    <label class="row">While I play, the orchestra
+      <select id="steady"><option value="steady">keeps steady, changes tempo at key spots</option>
+        <option value="follow">follows my every tempo change</option></select></label>
+    <p class="hint">Steady: like a real orchestra, it holds each section's tempo (at your overall pace, judged
+      where a new section starts) and gives way only at rit., rubato and section changes, as in the recording.</p>
     <label class="row" id="echoRow" hidden><input type="checkbox" id="echo"> Play my piano through the app too</label>
     <label class="row" id="aecRow" hidden><input type="checkbox" id="aec"> Cancel the orchestra's sound from the
       microphone (try this if you play through the phone's own speaker and it loses you)</label>
@@ -69,6 +74,8 @@
     <h2>Sound</h2>
     <label class="row"><input type="checkbox" id="phrasing"> Shape the orchestra's dynamics like the recording</label>
     <label class="row"><input type="checkbox" id="balance"> Bring out the leading lines (balance)</label>
+    <label class="row">Shaping <input type="range" id="shaping" min="0" max="100" step="5" value="75">
+      <output id="shapingOut">75%</output></label>
     <label class="row">Orchestra volume <input type="range" id="volume" min="0" max="1.5" step="0.05" value="0.9"></label>
     <label class="row">Speaker delay <input type="range" id="latency" min="0" max="350" step="10" value="0">
       <output id="latencyOut">0 ms</output></label>

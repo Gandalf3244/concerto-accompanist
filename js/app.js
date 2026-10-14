@@ -4,6 +4,7 @@ import { Score, BAR } from "./score.js";
 import { Engine } from "./engine.js";
 import { AudioFrontEnd } from "./micfront.js";
 import { Sampler, prefetchSamples } from "./sampler.js";
+import { playNote } from "./voice.js";
 
 const AHEAD = 0.04;  // s; orchestra notes are scheduled this far ahead
 const TICK_MS = 8;
@@ -335,25 +336,6 @@ function onset(o) {
 }
 
 // ------------------------------------------------------------ playing
-const BOWED = ["violins1", "violins2", "violas", "celli", "basses"];
-// which sample set plays a note: plucked or tremolo strings have their own
-function soundFor(part, note) {
-  if (BOWED.includes(part.set)) {
-    if (note.pizz && sampler.sets[part.set + "_pizz"]) return part.set + "_pizz";
-    if (note.tremolo >= 3) return "tremolo";
-  }
-  return part.set;
-}
-
-// how much louder or softer than written the orchestra plays here, from the
-// recording (a gain per beat; tools/expression.py)
-function phrasing(beat) {
-  const g = data.gain;
-  if (!g || !settings.phrasing) return 1;
-  const i = Math.max(0, Math.min(g.length - 1, Math.floor(beat))), j = Math.min(g.length - 1, i + 1), f = beat - Math.floor(beat);
-  return 10 ** (((1 - f) * g[i] + f * g[j]) * settings.shaping / 100 / 20);
-}
-
 function latency() {
   return (ctx.outputLatency || ctx.baseLatency || 0) + settings.latencyMs / 1000;
 }
@@ -364,13 +346,7 @@ function tick() {
   const rate = Math.max(engine.clock.rate, 1e-3);
   for (const { note, time } of engine.tick(now, AHEAD + lat)) {
     if (settings.muted.has(note.part)) continue;
-    const part = data.parts[note.partIdx];
-    const set = soundFor(part, note);
-    const vel = Math.max(20, Math.min(127, note.velocity + part.vel - 75));
-    // balance: the lead lifted, accompaniment shaded, sections at their power (tools/balance.py)
-    const bal = settings.balance ? 10 ** (note.balance * settings.shaping / 100 / 20) : 1;
-    sampler.play(set, part.drum ?? note.pitch, vel, time - lat, note.dur / rate, phrasing(note.beat) * bal,
-                 note.legato ? "legato" : note.stacc ? "stacc" : null);
+    playNote(sampler, data, note, time - lat, note.dur / rate, settings);
     debug.played++;
   }
   if (!engine.started) return;

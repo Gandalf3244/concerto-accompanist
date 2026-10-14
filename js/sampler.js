@@ -60,11 +60,22 @@ export class Sampler {
       const buffer = await new Promise((ok, fail) => this.ctx.decodeAudioData(bytes, ok, fail));
       const data = buffer.getChannelData(0);
       const sr = buffer.sampleRate;
-      // where each note really starts (decoders may shift the audio a little)
+      // where each note really starts. Decoders delay the audio: Safari keeps
+      // the MP3 encoder's delay (~40 ms), so the end of each note spills into
+      // the start of the next slot. The delay is measured on the first note
+      // (nothing before it), then each note is looked for only near where it
+      // should be, past the previous note's tail.
+      const firstAbove = (from, to) => {
+        for (let i = Math.max(0, from); i < Math.min(data.length, to); i++) if (Math.abs(data[i]) > 1e-3) return i;
+        return -1;
+      };
+      const f0 = firstAbove(0, Math.floor((index.pad + 0.3) * sr));
+      const delay = f0 >= 0 ? Math.max(0, f0 / sr - index.pad) : 0;
       const onsets = s.pitches.map((_, k) => {
-        const a = Math.floor(k * index.slot * sr), b = Math.min(data.length, Math.floor((k * index.slot + index.pad + 0.2) * sr));
-        for (let i = a; i < b; i++) if (Math.abs(data[i]) > 1e-3) return Math.max(a, i - 16) / sr;
-        return k * index.slot + index.pad;
+        const at = k * index.slot + index.pad + delay; // expected start
+        const a = Math.floor((at - 0.03) * sr);
+        const i = firstAbove(a, Math.floor((at + 0.2) * sr));
+        return i >= 0 ? Math.max(a, i - 16) / sr : at;
       });
       const attack = s.attack && Object.fromEntries(["short", "long"].map(k => [k, s.attack[k].map(c => Float32Array.from(c))]));
       this.sets[name] = { buffer, pitches: s.pitches, onsets, loop: s.loop, slot: index.slot, pad: index.pad,

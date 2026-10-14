@@ -1,6 +1,6 @@
 // Offline support: keep every file of the app in a cache. Bump VERSION
 // whenever any file changes, so phones fetch the new version.
-const VERSION = "edb0daa5d9";
+const VERSION = "0f28caa3c2";
 const FILES = [
   "./", "index.html", "style.css", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png",
   "js/app.js", "js/score.js", "js/follower.js", "js/engine.js", "js/micfront.js", "js/sampler.js",

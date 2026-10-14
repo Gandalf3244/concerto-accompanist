@@ -17,18 +17,28 @@ const CONFIRM = 6, CONFIRM_S = 3.0, KEY_CONFIRM = 3, KEY_CONFIRM_S = 1.0;
 const GUIDE_SIGMA = 1.5, KEY_GUIDE_SIGMA = 3.0;
 
 // The conductor (with a tempo plan). As a conductor accompanies a concerto:
-// at the start of each section it listens to the soloist and takes their
-// tempo; then it beats time. In a fast section the tempo is held, the same
-// all through each bar (the accompaniment is not "beguiled" by the soloist's
-// rubato), corrected only at bar lines and only a little; in a slow section
-// it is set beat by beat, leaning toward the soloist; at a rit., rubato or a
-// change of section it follows the soloist more. The tempo only changes on a
-// beat (or a bar line), never in between, so the rhythm stays even.
-const ENTRY_BEATS = 4;       // the soloist's first beats in a section: the conductor listens
-const ENTRY_PACE = [0.6, 1.3]; // the section's tempo is taken from the player within this of the plan's (practising slowly is fine)
-const FAST = { correct: 0.02, deadband: 0.15, adapt: 0.01, adaptAbove: 0.03 }; // per bar
-const SLOW = { lean: 0.5, settle: 2.0, max: 0.08 };   // per beat; settle: beats to close a gap
-const FLEX = { weight: 0.7, settle: 1.5, max: 0.12 }; // per beat
+// it keeps listening to the soloist's tempo (the follower's readings over
+// their last bar, as a pace against the plan's tempo for the same notes, so a
+// bar the music stretches doesn't read as slow) and beats time at that tempo,
+// the way the recording shapes it. The tempo changes only on a beat, never
+// inside one (the rhythm stays even), and by a limited step: in a fast
+// section at most 2.5% a beat, in a slow one 4%; at a rit., rubato or a change
+// of section, and in the first bar of every section (where it takes the
+// soloist's tempo afresh), it follows closely. A gentle extra correction
+// closes a gap in position; playing faster while clearly behind (or slower
+// while clearly ahead) is catching up after a slip and doesn't change the tempo.
+const PACE_RANGE = [0.6, 1.3];  // the player's pace (their tempo / the plan's) is believed within this (practising slowly is fine)
+const ENTRY_BEATS = 4;          // a section's first beats the soloist plays: follow closely, take their tempo
+// per decision (unit: every bar or every beat): window = beats of notes the tempo is measured over
+// (the median of the follower's readings), gain = how far the pace moves
+// toward what is heard, step = most it moves, deadband = smaller differences are ignored, confirm = a
+// change must be heard twice in a row,
+// settle = beats to close a gap in position, correct = most that adds
+const FAST = { unit: "beat", window: 4, gain: 0.7, step: 0.025, deadband: 0.01, confirm: false, settle: 3, correct: 0.04, posDeadband: 0.1 };
+const SLOW = { unit: "beat", window: 2, gain: 0.8, step: 0.04, deadband: 0.01, confirm: false, settle: 2, correct: 0.06, posDeadband: 0 };
+const FLEX = { unit: "beat", window: 2, gain: 1.0, step: 0.12, deadband: 0, confirm: false, settle: 1.5, correct: 0.12, posDeadband: 0 };
+const BIG_CHANGE = 0.08, BIG_STEP = 0.10; // a change of pace this big may move this much per decision
+const CATCH_UP = (globalThis.conductorTune?.catchUp ?? 0.5);        // beats behind (ahead) at which faster (slower) playing is catching up after a slip, not a new tempo
 const PLAN_JUMP = 4.0;       // beats apart before the jump rule applies
 
 // The orchestra's own clock: follows the soloist smoothly instead of jumping.
@@ -140,10 +150,22 @@ export class Engine {
     // section: the plan section we are in; rate: its tempo (beats/s) as taken
     // from the player; entry: beats left of listening; next: the beat at which
     // the tempo is next decided
-    this.cond = { section: null, rate: null, pace: 1.0, entry: 0, pts: [], seen: null, next: null, waited: 0 };
-    // plan time at each bar line (planTime)
+    // section: the plan section we are in, from beat secStart; pace: the
+    // player's tempo / the plan's as the orchestra takes it; hist: the
+    // player's recent notes [beat, time]; next: the beat at which the tempo is next decided
+    this.cond = { section: null, secStart: 0, pace: null, entry: 0, hist: [], samples: [], seen: null, next: null, errSum: 0, errN: 0 };
+    // the limits (tests may override them: globalThis.conductorTune = {FAST: {...}, ...})
+    const tune = globalThis.conductorTune || {};
+    this.tune = { FAST: { ...FAST, ...tune.FAST }, SLOW: { ...SLOW, ...tune.SLOW }, FLEX: { ...FLEX, ...tune.FLEX } };
+    // the tempo the orchestra takes in each bar (at pace 1): the plan's, which
+    // is the section's tempo except where the recording stretches or presses
+    // on (as a conductor who knows the piece shapes those bars with the
+    // soloist instead of reacting late). cum: plan time at each bar line (planTime)
+    this.plan.use = (globalThis.conductorTune?.sectionTempo)
+      ? bars.map((b, i) => { const h = this.planAt(4 * i); return h.fast && h.flex < 3 ? h.secBpm : h.bpm; })
+      : bars.map(b => b[1]);
     this.plan.cum = [0];
-    for (const b of bars) this.plan.cum.push(this.plan.cum[this.plan.cum.length - 1] + 4 * 60 / b[1]);
+    for (const u of this.plan.use) this.plan.cum.push(this.plan.cum[this.plan.cum.length - 1] + 4 * 60 / u);
   }
 
   planAt(beat) {
@@ -191,89 +213,93 @@ export class Engine {
   // seconds from the start to beat b at the plan's tempos
   planTime(b) {
     const bars = this.plan.bars, i = Math.max(0, Math.min(bars.length - 1, Math.floor(b / 4)));
-    return this.plan.cum[i] + (b - 4 * i) * 60 / bars[i][1];
+    return this.plan.cum[i] + (b - 4 * i) * 60 / this.plan.use[i];
   }
 
-  // the player's pace (their tempo / the plan's) over the notes heard since
-  // the section began: how fast their time runs against the plan's time for
-  // the same notes (so a bar the music stretches doesn't read as slow), the
-  // median slope over pairs of notes at least half a beat apart
-  entryPace() {
-    const p = this.cond.pts;
+  // the player's pace (their tempo / the plan's) over their notes from beat
+  // `from` on: how fast their time runs against the plan's time for the same
+  // notes, the median over pairs of notes 1-2 beats apart (local tempos: a
+  // stumble, after which the player carries on, touches only the few pairs
+  // around it, where a real change of tempo shows in all of them)
+  paceOver(from) {
+    const p = this.cond.hist.filter(x => x[0] >= from);
     if (p.length < 3 || p[p.length - 1][0] - p[0][0] < 2) return null;
     const slopes = [];
     for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) {
-      if (p[j][0] - p[i][0] >= 0.5 && p[j][1] > p[i][1]) slopes.push((this.planTime(p[j][0]) - this.planTime(p[i][0])) / (p[j][1] - p[i][1]));
+      const db = p[j][0] - p[i][0];
+      if (db > 2) break;
+      if (db >= 1 && p[j][1] > p[i][1]) slopes.push((this.planTime(p[j][0]) - this.planTime(p[i][0])) / (p[j][1] - p[i][1]));
     }
     if (slopes.length < 3) return null;
     slopes.sort((a, b) => a - b);
-    return slopes[slopes.length >> 1];
+    return Math.max(PACE_RANGE[0], Math.min(PACE_RANGE[1], slopes[slopes.length >> 1]));
   }
 
   // The conductor (see the top of this file); called while the soloist plays.
   conduct(t) {
     const f = this.follower, C = this.cond, c = this.clock;
     c.advance(t);
-    const pos = f.position(t), err = pos - c.beat, solo = 1.0 / f.spb;
+    const pos = f.position(t), err = pos - c.beat;
     if (Math.abs(err) > PLAN_JUMP) {
-      if (this.farOff(t, pos, solo)) C.next = null;
+      if (this.farOff(t, pos, 1.0 / f.spb)) { C.next = null; C.hist = []; }
       return;
     }
     this.away = null;
-    if (C.entry > 0 && f.lastTime !== null && f.lastTime !== C.seen) { C.seen = f.lastTime; C.pts.push([f.lastBeat, f.lastTime]); }
+    // the player's notes (a jump back or a relocation restarts the record)
+    if (f.lastTime !== null && f.lastTime !== C.seen) {
+      C.seen = f.lastTime;
+      const last = C.hist[C.hist.length - 1];
+      if (last && f.lastBeat < last[0]) C.hist = [];
+      C.hist.push([f.lastBeat, f.lastTime]);
+      // the follower's tempo just now, as a pace against the plan's tempo there
+      const bi = Math.max(0, Math.min(this.plan.use.length - 1, Math.floor(f.lastBeat / 4)));
+      C.samples.push([f.lastBeat, 60 / f.spb / this.plan.use[bi]]);
+      while (C.samples.length && C.samples[0][0] < f.lastBeat - 8) C.samples.shift();
+      while (C.hist.length > 48 || (C.hist.length && C.hist[0][0] < f.lastBeat - 16)) C.hist.shift();
+    }
+    C.errSum += err; C.errN++; // the gap, averaged until the next decision
     if (C.next !== null && c.beat < C.next - 1e-9) return; // the beat goes on at the tempo set
     const h = this.planAt(c.beat);
-    const secRate = h.secBpm / 60.0;
-    if (h.sec !== C.section) {
-      // a new section: listen to the soloist's tempo first (from the notes
-      // they play in it, not the follower's running tempo, which still
-      // remembers the last section)
-      C.section = h.sec; C.entry = ENTRY_BEATS; C.pts = [];
-      if (C.rate !== null) C.rate = secRate * C.pace; // the player's pace so far, until we know
-    }
-    if (C.rate === null) { C.pace = 1.0; C.rate = secRate; }
-    const nextBeat = Math.floor(c.beat + 1e-9) + 1;
+    if (h.sec !== C.section) { C.section = h.sec; C.secStart = Math.floor(c.beat / 4) * 4; C.entry = ENTRY_BEATS; C.heardN = 0; }
+    const entry = C.entry > 0;
+    const { FAST, SLOW, FLEX } = this.tune;
+    const P = entry || this.keySpot() ? FLEX : h.fast ? FAST : SLOW;
     const clamp = (x, m) => Math.max(-m, Math.min(m, x));
-    if (C.entry > 0) {
-      // listening: follow the player's position closely at the pace they are taking
-      const heard = this.entryPace();
-      const pace = heard === null ? C.pace : Math.max(ENTRY_PACE[0], Math.min(ENTRY_PACE[1], heard));
-      c.rate = h.bpm / 60 * pace * (1 + clamp(err / FLEX.settle, FLEX.max));
+    // the player's pace: over the notes of this section when it has just begun, else the window
+    // the player's pace since the last decision: the median of the follower's
+    // tempo readings over it (one bar in a fast section, a beat in a slow one)
+    let heard = null;
+    const recent = C.samples.filter(x => x[0] >= c.beat - P.window).map(x => x[1]);
+    if (recent.length >= 2) {
+      recent.sort((a, b) => a - b);
+      heard = Math.max(PACE_RANGE[0], Math.min(PACE_RANGE[1], recent[recent.length >> 1]));
+    }
+    if (entry) heard = this.paceOver(C.secStart) ?? heard; // a section's first notes: its own notes only
+    const gap = C.errSum / C.errN;
+    C.errSum = 0; C.errN = 0;
+    if (entry) {
+      // listening at a section's start: take the player's tempo as heard, and
+      // keep listening until it has been heard twice (or for twice as long)
+      if (heard !== null) { C.pace = heard; C.heardN++; }
       C.entry -= 1;
-      C.waited = (C.waited || 0) + 1;
-      if (C.entry <= 0 && heard === null && C.waited < 2 * ENTRY_BEATS) C.entry = 1; // wait a little for notes
-      if (C.entry <= 0) {
-        C.waited = 0;
-        C.pace = pace;
-        C.rate = secRate * C.pace;
-        this.onDecide?.({ t, beat: c.beat, section: h.sec, pace: C.pace, bpm: C.rate * 60, n: C.pts.length });
-      }
-      C.next = nextBeat;
-      return;
+      if (C.entry <= 0 && C.heardN < 2 && c.beat - C.secStart < 2 * ENTRY_BEATS + 4) C.entry = 1;
     }
-    // the plan's tempo here, at the player's pace: a fast section keeps one
-    // tempo (only a marked change bends it), a slow one has the recording's shape
-    const base = () => (h.fast && h.flex < 3 ? secRate : h.bpm / 60.0) * (C.rate / secRate);
-    if (this.keySpot()) {
-      const r = FLEX.weight * solo + (1 - FLEX.weight) * base();
-      c.rate = r * (1 + clamp(err / FLEX.settle, FLEX.max));
-      C.next = nextBeat;
-    } else if (h.fast) {
-      // at a bar line: the section's tempo, taken a little toward a player who
-      // keeps a different one, and a small correction if they are apart
-      const d = solo / C.rate - 1;
-      if (Math.abs(d) > FAST.adaptAbove) {
-        C.rate *= 1 + clamp(0.15 * d, FAST.adapt);
-        C.pace = C.rate / secRate;
-      }
-      const corr = Math.abs(err) > FAST.deadband ? clamp(err / 4, FAST.correct) : 0;
-      c.rate = base() * (1 + corr);
-      C.next = Math.floor(c.beat / 4 + 1e-9) * 4 + 4;
-    } else {
-      const b = base(), lean = SLOW.lean * (solo / b - 1), corr = err / SLOW.settle;
-      c.rate = b * (1 + clamp(lean + corr, SLOW.max));
-      C.next = nextBeat;
-    }
+    if (C.pace === null) C.pace = heard ?? 1.0;
+    else if (!entry && heard !== null && Math.abs(heard / C.pace - 1) > P.deadband) {
+      // a real change of tempo moves the player away from the orchestra in
+      // the same direction; playing faster while behind (or slower while
+      // ahead) is catching up after a slip, and the tempo stays
+      // a change heard twice in a row, that is (outside the key spots, where it follows at once)
+      const d = heard / C.pace - 1, sure = !P.confirm || Math.sign(d) === C.lastSign;
+      C.lastSign = Math.sign(d);
+      // a big difference, heard twice, is taken up quickly (the player has really changed tempo)
+      const step = Math.abs(d) > BIG_CHANGE ? Math.max(P.step, BIG_STEP) : P.step;
+      if (sure && !(d > 0 && gap < -CATCH_UP) && !(d < 0 && gap > CATCH_UP)) C.pace *= 1 + clamp(P.gain * d, step);
+    } else C.lastSign = 0;
+    const corr = Math.abs(gap) > P.posDeadband ? clamp(gap / P.settle, P.correct) : 0;
+    c.rate = this.plan.use[h.bar] / 60 * C.pace * (1 + corr);
+    C.next = P.unit === "bar" ? Math.floor(c.beat / 4 + 1e-9) * 4 + 4 : Math.floor(c.beat + 1e-9) + 1;
+    this.onDecide?.({ t, beat: c.beat, section: h.sec, pace: C.pace, heard, bpm: c.rate * 60, kind: P === FAST ? "fast" : P === SLOW ? "slow" : "flex" });
   }
 
   // Advance to time t; return orchestra notes due, each with the time it is

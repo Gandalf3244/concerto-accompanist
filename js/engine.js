@@ -8,6 +8,13 @@ import { Follower } from "./follower.js";
 import { AudioFollower } from "./audiofollower.js";
 
 const SOLO_ACTIVE_BEATS = 1.5; // soloist counts as playing within this many beats of a piano note
+// Many passages sound alike, so the follower can briefly believe the player is
+// somewhere else. The orchestra moves far (more than jumpBeats) only once the
+// follower has stayed there: CONFIRM new matches over CONFIRM_S seconds, at a
+// key spot (flexible bar, or no tempo plan) the KEY_ values.
+const CONFIRM = 6, CONFIRM_S = 3.0, KEY_CONFIRM = 3, KEY_CONFIRM_S = 1.0;
+// how far from the orchestra (beats) the follower expects the player, in a steady bar / at a key spot
+const GUIDE_SIGMA = 1.5, KEY_GUIDE_SIGMA = 3.0;
 
 // The orchestra's own clock: follows the soloist smoothly instead of jumping.
 export class AccompClock {
@@ -65,6 +72,38 @@ export class Engine {
     // sections where the orchestra keeps the soloist's last tempo instead of its own
     this.keepTempo = new Set();
     this.plan = null; // tempo plan (setPlan): the orchestra keeps steady between its key spots
+    this.skipped = 0; // orchestra notes passed over after a jump (for tests)
+    this.away = null;  // the follower far from the orchestra: {err, n, seen, t0}
+    // the follower is told where the orchestra is
+    this.follower.guide = t => this.started && this.clock.t !== null
+      ? { beat: this.clock.beat + this.clock.rate * (t - this.clock.t), sigma: this.keySpot() ? KEY_GUIDE_SIGMA : GUIDE_SIGMA }
+      : null;
+  }
+
+  // a key spot: where the orchestra gives way to the soloist (rit., rubato, a new section), or no plan
+  keySpot() { return !this.plan || this.planAt(this.clock.beat).flex; }
+
+  // Steer the clock toward the follower (AccompClock.steer), but move far only
+  // once the follower has stayed far: until then the orchestra keeps its course.
+  follow(t, target, rate, tau, maxAdjust, jumpBeats) {
+    this.clock.advance(t);
+    const err = target - this.clock.beat;
+    if (Math.abs(err) <= jumpBeats) {
+      this.away = null;
+      this.clock.steer(t, target, rate, tau, maxAdjust, Infinity);
+      return;
+    }
+    const f = this.follower, key = this.keySpot();
+    if (!this.away || Math.abs(err - this.away.err) > 1.0) this.away = { err, n: 0, seen: f.lastTime, t0: t };
+    else if (f.lastTime !== this.away.seen) { this.away.n++; this.away.seen = f.lastTime; this.away.err = err; }
+    if (this.away.n >= (key ? KEY_CONFIRM : CONFIRM) && t - this.away.t0 >= (key ? KEY_CONFIRM_S : CONFIRM_S)) {
+      this.clock.beat = target;
+      this.clock.rate = rate;
+      this.away = null;
+      this.nextOrch = bisectLeft(this.orchBeats, target - 1e-6); // play on from there (also after a jump back)
+    } else {
+      this.clock.freeRun(t);
+    }
   }
 
   // A tempo plan: per bar [bar, bpm, flex] (tools/tempo_plan.py). In a steady
@@ -140,12 +179,13 @@ export class Engine {
     }
     if (here.flex || this.pace === null) {
       // a key spot (or the player has not settled yet): follow closely
-      this.clock.steer(t, f.position(t), solo);
+      const c = this.clock;
+      this.follow(t, f.position(t), solo, c.tau, c.maxAdjust, c.jumpBeats);
       return;
     }
     const base = ref * this.pace;
     const lean = Math.max(-P.lean, Math.min(P.lean, 0.5 * (solo / base - 1)));
-    this.clock.steer(t, f.position(t), base * (1 + lean), P.tau, P.maxAdjust, P.jumpBeats);
+    this.follow(t, f.position(t), base * (1 + lean), P.tau, P.maxAdjust, P.jumpBeats);
   }
 
   // first bar of the steady stretch containing bar i (bars between flexible ones)
@@ -162,7 +202,8 @@ export class Engine {
     if (!this.started) return [];
     const f = this.follower;
     if (this.soloistActive(this.clock.beat) && f.lastTime !== null) {
-      if (!this.plan) this.clock.steer(t, f.position(t), 1.0 / f.spb);
+      const c = this.clock;
+      if (!this.plan) this.follow(t, f.position(t), 1.0 / f.spb, c.tau, c.maxAdjust, c.jumpBeats);
       else this.steerPlanned(t);
     } else {
       // the orchestra plays alone: its own tempo in an orchestra-only
@@ -186,7 +227,7 @@ export class Engine {
       // after a jump, skip the backlog instead of firing it all at once
       if (n.beat >= this.clock.beat - 0.3) {
         due.push({ note: n, time: t + Math.max(0, n.beat - this.clock.beat) / Math.max(this.clock.rate, 1e-3) });
-      }
+      } else this.skipped++;
       this.nextOrch += 1;
     }
     return due;

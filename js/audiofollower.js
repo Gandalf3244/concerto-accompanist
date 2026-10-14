@@ -33,6 +33,7 @@ export const PARAMS = {
   prune: 15.0,     // hypotheses this much worse than the best are dropped
   maxStates: 64,
   firstAhead: 8,   // beats searched for the very first chord
+  guideCap: 1.5,   // most a hypothesis pays per onset for being away from the orchestra
 };
 
 export function llr(s) {
@@ -61,6 +62,19 @@ export class AudioFollower {
     this.own = this.anchor; // the anchor as we last set it (the engine replaces it while the orchestra plays alone)
     this.states = [];       // {idx, beat, t, spb, n, score}
     this.missStreak = 0;
+    // where the orchestra is (set by the engine): guide(t) -> {beat, sigma}
+    // in beats. The player plays with the orchestra, so a hypothesis far from
+    // it is unlikely: passages that sound alike elsewhere don't pull us away.
+    this.guide = null;
+  }
+
+  // cost of being at beat b at time t, given where the orchestra is
+  away(b, t) {
+    if (!this.guide) return 0;
+    const g = this.guide(t);
+    if (!g) return 0;
+    const z = (b - g.beat) / g.sigma;
+    return Math.min(PARAMS.guideCap, 0.5 * z * z);
   }
 
   position(t) {
@@ -106,7 +120,7 @@ export class AudioFollower {
     for (const s of this.states) {
       if (!best || s.score > best.score) best = s;
       // the onset is no chord of ours
-      offer({ ...s, score: s.score - P.spurious, stay: true });
+      offer({ ...s, score: s.score - P.spurious - this.away(s.beat + Math.max(0, t - s.t) / s.spb, t), stay: true });
       // or the next chord, or one a little later (onsets in between missed)
       const dt = Math.max(0, t - s.t);
       const pred = s.beat + dt / s.spb;
@@ -118,7 +132,7 @@ export class AudioFollower {
         const z = (b - pred) / sigma;
         if (z > 4) break;
         if (z < -4) continue;
-        const score = s.score - 0.5 * z * z - P.skip * (j - s.idx - 1) + ev(j);
+        const score = s.score - 0.5 * z * z - P.skip * (j - s.idx - 1) + ev(j) - this.away(b, t);
         let spb = s.spb;
         const db = b - s.beat;
         if (db >= 0.2 && dt > 0) {
@@ -135,7 +149,7 @@ export class AudioFollower {
       const lo = bisectLeft(this.beats, here - P.jumpReach), hi = bisectRight(this.beats, here + P.jumpReach);
       for (let j = lo; j < hi; j++) {
         const e = ev(j);
-        if (e > 0) offer({ idx: j, beat: this.beats[j], t, spb: best.spb, n: 0, score: best.score - P.jump + e });
+        if (e > 0) offer({ idx: j, beat: this.beats[j], t, spb: best.spb, n: 0, score: best.score - P.jump + e - this.away(this.beats[j], t) });
       }
     }
     this.keep([...next.values()]);

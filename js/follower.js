@@ -10,6 +10,7 @@ import { bisectLeft, bisectRight } from "./score.js";
 const CHORD_SPREAD = 0.07; // s; notes of one chord are rarely further apart than this
 const LOOKAHEAD = 6.0;     // beats searched ahead of the last match
 const LOST_AFTER = 6;      // unmatched notes in a row before a wide search
+const STUCK_S = 2.0;       // s without a match, far from the orchestra: look where the orchestra is
 
 function pushMax(arr, x, maxlen) { arr.push(x); if (arr.length > maxlen) arr.shift(); }
 
@@ -33,6 +34,8 @@ export class Follower {
     this.lastSkipped = false;
     this.pendingSkipped = 0;
     this.timed = false; // the orchestra is playing: the soloist's first note has a time to fit
+    // where the orchestra is (set by the engine): guide(t) -> {beat, sigma} in beats
+    this.guide = null;
   }
 
   // ------------------------------------------------------------ queries
@@ -96,7 +99,8 @@ export class Follower {
         return c.beat;
       }
     }
-    const idx = this.bestMatch(pitch, t, LOOKAHEAD);
+    let idx = this.bestMatch(pitch, t, LOOKAHEAD);
+    if (idx === null) idx = this.guideMatch(pitch, t);
     if (idx === null) {
       this.unmatched += 1;
       if (this.unmatched >= LOST_AFTER) this.relocate();
@@ -133,6 +137,27 @@ export class Follower {
         this.pendingSkipped = skipped;
       }
     }
+    return best;
+  }
+
+  // Stuck: nothing has matched for STUCK_S and our last match is far from
+  // the orchestra. The player plays with the orchestra, so look near
+  // where it is. (A player who went back is found by relocate instead.)
+  guideMatch(pitch, t) {
+    const g = this.guide ? this.guide(t) : null;
+    if (!g || Math.abs(g.beat - this.lastBeat) < 2 * g.sigma || this.lastTime === null || t - this.lastTime < STUCK_S) return null;
+    const lo = bisectLeft(this.beats, g.beat - 2 * g.sigma), hi = bisectRight(this.beats, g.beat + 2 * g.sigma);
+    let best = null, bestD = Infinity;
+    for (let i = lo; i < hi; i++) {
+      const c = this.chords[i];
+      if (!c.pitches.has(pitch) || c.matched.has(pitch)) continue;
+      const d = Math.abs(c.beat - g.beat);
+      if (d < bestD) { best = i; bestD = d; }
+    }
+    if (best === null) return null;
+    this.lastZ = 9;            // a fresh start: not a timing observation
+    this.pendingSkipped = 0;
+    if (Math.abs(this.chords[best].beat - this.lastBeat) > 2) this.obs = [];
     return best;
   }
 
@@ -202,6 +227,9 @@ export class Follower {
     const pitches = this.recent.map(r => r[0]);
     const tLast = this.recent[this.recent.length - 1][1];
     const expected = this.anchor[1] !== null ? this.position(tLast) : this.lastBeat;
+    // where the orchestra is: a player goes back to repeat a phrase far more
+    // often than they run ahead of the orchestra
+    const g = this.guide ? this.guide(tLast) : null;
     let best = null, bestScore = -1e9;
     const lo = bisectLeft(this.beats, this.lastBeat - 16);
     const hi = bisectRight(this.beats, this.lastBeat + 32);
@@ -213,8 +241,11 @@ export class Follower {
         j++;
       }
       // repeated phrases are common: prefer the copy nearest where we expect to be
-      const score = hits - 0.08 * Math.abs(this.chords[Math.min(j - 1, n - 1)].beat - expected);
-      if (hits >= 0.7 * pitches.length && score > bestScore) { best = j - 1; bestScore = score; }
+      const b = this.chords[Math.min(j - 1, n - 1)].beat;
+      let score = hits - 0.08 * Math.abs(b - expected);
+      if (g && b > g.beat + g.sigma) score -= 0.2 * (b - g.beat - g.sigma);
+      // a clear match only (else wait for more notes)
+      if (hits >= 0.7 * pitches.length && score >= 0.5 * pitches.length && score > bestScore) { best = j - 1; bestScore = score; }
     }
     if (best !== null) {
       const c = this.chords[best];

@@ -432,7 +432,7 @@ function startAt(bar) {
   const score = new Score(data, effectiveTempoMap());
   const startBeat = score.beatOfMeasure(bar);
   engine = new Engine(score, startBeat, 1.0, settings.mode === "mic");
-  if (settings.steady && data.plan) engine.setPlan(data.plan);
+  if (settings.steady && data.plan) engine.setPlan(data.plan, data.planSections);
   engine.keepTempo = new Set(engine.sections.map(([a], i) => (sectionMode(a) === "keep" ? i : -1)).filter(i => i >= 0));
   front = settings.mode === "mic" ? new AudioFrontEnd(ctx.sampleRate) : null;
   orchestraFirst = !engine.soloistActive(startBeat + 0.5);
